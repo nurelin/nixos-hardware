@@ -15,10 +15,10 @@
     "vt.global_cursor_default=0"
   ];
 
-  hardware.firmware = [
-    (pkgs.callPackage ./firmware {})
-  ];
+  #hardware.firmware = [
+  #  (pkgs.callPackage ./firmware {})
+  #];
 
-  boot.kernelPackages = lib.mkDefault (pkgs.callPackage ./kernel {});
+  #boot.kernelPackages = lib.mkDefault ((pkgs.callPackage ./kernel {}).kernel);
 
 }
