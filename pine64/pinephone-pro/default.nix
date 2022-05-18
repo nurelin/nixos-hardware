@@ -36,7 +36,7 @@ in
   sdImage-efi.populateESPCommands = ''
     mkdir -p files/EFI/boot
     ${pkgs.grub2}/bin/grub-mkimage \
-      --config="${./grub_early.cfg}" \
+      --config="${./sd-image/grub_early.cfg}" \
       --prefix="" \
       --output="files/EFI/boot/bootaa64.efi" \
       --format="arm64-efi" \
