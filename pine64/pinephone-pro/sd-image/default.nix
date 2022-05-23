@@ -1,12 +1,8 @@
 # This module creates a bootable SD card image containing the given NixOS
-# configuration. The generated image is MBR partitioned, with a FAT
-# /boot/firmware partition, and ext4 root partition. The generated image
+# configuration. The generated image is GPT partitioned, with a FAT
+# /boot/efi partition, and ext4 root partition. The generated image
 # is sized to fit its contents, and a boot script automatically resizes
 # the root partition to fit the device on the first boot.
-#
-# The firmware partition is built with expectation to hold the Raspberry
-# Pi firmware and bootloader, and be removed and replaced with a firmware
-# build for the target SoC for other board families.
 #
 # The derivation for the SD image will be placed in
 # config.system.build.sdImage-efi
@@ -28,6 +24,12 @@ let
   espFSImage = pkgs.callPackage ./make-esp-fs.nix {
     populateESPCommands = config.sdImage-efi.populateESPCommands;
   };
+
+  kernelPath = "${config.boot.kernelPackages.kernel}/" +
+    "${config.system.boot.loader.kernelFile}";
+  initrdPath = "${config.system.build.initialRamdisk}/" +
+    "${config.system.boot.loader.initrdFile}";
+  systemRoot = config.system.build.toplevel;
 in
 {
   imports = [
@@ -94,45 +96,89 @@ in
 
     populateESPCommands = mkOption {
       example = literalExpression "'' cp \${pkgs.myBootLoader}/u-boot.bin firmware/ ''";
+      default = ''
+        mkdir -p files/EFI/boot
+
+        ${pkgs.buildPackages.qemu}/bin/qemu-aarch64 \
+        ${pkgs.grub2}/bin/grub-mkimage \
+          --config="${./grub_early.cfg}" \
+          --prefix="" \
+          --output="files/EFI/boot/bootaa64.efi" \
+          --format="arm64-efi" \
+          \
+          all_video \
+          cat \
+          configfile \
+          disk \
+          echo \
+          efi_gop \
+          fat \
+          gzio \
+          help \
+          iso9660 \
+          linux \
+          ls \
+          normal \
+          part_gpt \
+          part_msdos \
+          search \
+          search_label \
+          test \
+          true
+        cp ${kernelPath} files/EFI/boot/vmlinuz
+        cp ${initrdPath} files/EFI/boot/initramfs
+
+        tmp="init=${systemRoot}/init $(cat ${systemRoot}/kernel-params)"
+
+        cat > files/EFI/boot/grub.cfg <<EOF
+timeout=0
+
+menuentry "NixOS" {
+	linux (\$root)/EFI/boot/vmlinuz $tmp
+	initrd (\$root)/EFI/boot/initramfs
+}
+EOF
+      '';
       description = ''
         Shell commands to populate the ./firmware directory.
         All files in that directory are copied to the
         /boot/firmware partition on the SD image.
       '';
-    };
+        };
 
-    rootPartitionSize = mkOption {
-      type = types.int;
-      default = 3400;
-      description = ''
-        Size of the root partition, in megabytes.
-      '';
-    };
+        rootPartitionSize = mkOption {
+          type = types.int;
+          default = 5100;
+          description = ''
+            Size of the root partition, in megabytes.
+          '';
+        };
 
-    rootPartitionUUID = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "14e19a7b-0ae0-484d-9d54-43bd6fdc20c7";
-      description = ''
-        UUID for the filesystem on the main NixOS partition on the SD card.
-      '';
-    };
+        rootPartitionUUID = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "14e19a7b-0ae0-484d-9d54-43bd6fdc20c7";
+          description = ''
+            UUID for the filesystem on the main NixOS partition on the SD card.
+          '';
+        };
 
-    populateRootCommands = mkOption {
-      example = literalExpression "''\${config.boot.loader.generic-extlinux-compatible.populateCmd} -c \${config.system.build.toplevel} -d ./files/boot''";
-      description = ''
-        Shell commands to populate the ./files directory.
-        All files in that directory are copied to the
-        root (/) partition on the SD image. Use this to
-        populate the ./files/boot (/boot) directory.
-      '';
-    };
+        populateRootCommands = mkOption {
+          example = literalExpression "''\${config.boot.loader.generic-extlinux-compatible.populateCmd} -c \${config.system.build.toplevel} -d ./files/boot''";
+          default = "";
+          description = ''
+            Shell commands to populate the ./files directory.
+            All files in that directory are copied to the
+            root (/) partition on the SD image. Use this to
+            populate the ./files/boot (/boot) directory.
+          '';
+        };
 
-    postBuildCommands = mkOption {
-      example = literalExpression "'' dd if=\${pkgs.myBootLoader}/SPL of=$img bs=1024 seek=1 conv=notrunc ''";
-      default = "";
-      description = ''
-        Shell commands to run after the image is built.
+        postBuildCommands = mkOption {
+          example = literalExpression "'' dd if=\${pkgs.myBootLoader}/SPL of=$img bs=1024 seek=1 conv=notrunc ''";
+          default = "";
+          description = ''
+            Shell commands to run after the image is built.
         Can be used for boards requiring to dd u-boot SPL before actual partitions.
       '';
     };
@@ -156,6 +202,8 @@ in
   };
 
   config = {
+    boot.loader.grub.enable = lib.mkDefault false;
+
     fileSystems = {
       "/boot" = {
         device = "/dev/disk/by-label/${config.sdImage-efi.ESPName}";
@@ -202,8 +250,6 @@ in
         # Create the image file sized to fit ESP and root, plus slack for the gap.
         MB=$((1000 * 1000))
         MiB=$((1024 * 1024))
-
-        set -x
 
         ESPImageSize=$(du -b ${espFSImage} | awk '{ print $1 }')
         ESPSize=$((${toString config.sdImage-efi.ESPSize} * MB))
